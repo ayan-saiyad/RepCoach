@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import Principal, get_current_principal, require_user_access
 from app.db.models import Reminder
 from app.db.session import get_database_session
 from app.schemas import (
@@ -17,17 +18,22 @@ from app.services.reminders import send_test_reminder, to_reminder_response, ups
 
 router = APIRouter(prefix="/v1/reminders", tags=["reminders"])
 DbSession = Annotated[AsyncSession, Depends(get_database_session)]
+PrincipalDep = Annotated[Principal, Depends(get_current_principal)]
 
 
 @router.put("/{user_id}", response_model=ReminderResponse)
 async def save_reminder(
-    user_id: str, request: UpsertReminderRequest, db: DbSession
+    user_id: str, request: UpsertReminderRequest, principal: PrincipalDep, db: DbSession
 ) -> ReminderResponse:
+    require_user_access(principal, user_id)
     return to_reminder_response(await upsert_reminder(db, user_id, request))
 
 
 @router.get("/{user_id}", response_model=ReminderResponse)
-async def read_reminder(user_id: str, db: DbSession) -> ReminderResponse:
+async def read_reminder(
+    user_id: str, principal: PrincipalDep, db: DbSession
+) -> ReminderResponse:
+    require_user_access(principal, user_id)
     reminder = await db.scalar(select(Reminder).where(Reminder.user_id == user_id))
     if reminder is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No reminder configured")
@@ -35,7 +41,10 @@ async def read_reminder(user_id: str, db: DbSession) -> ReminderResponse:
 
 
 @router.post("/{user_id}/test", response_model=ReminderDeliveryResponse)
-async def test_reminder(user_id: str, db: DbSession) -> ReminderDeliveryResponse:
+async def test_reminder(
+    user_id: str, principal: PrincipalDep, db: DbSession
+) -> ReminderDeliveryResponse:
+    require_user_access(principal, user_id)
     try:
         reminder, delivery = await send_test_reminder(db, user_id)
     except LookupError as error:

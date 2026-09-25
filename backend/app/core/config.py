@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     twilio_auth_token: str | None = None
     twilio_from_number: str | None = None
     auto_create_schema: bool = Field(default=True)
+    # Local demos intentionally work without an identity provider. Production
+    # requests fail closed if this remains enabled.
+    auth_disabled: bool = True
+    cognito_region: str | None = None
+    cognito_user_pool_id: str | None = None
+    cognito_app_client_id: str | None = None
+    cognito_token_use: str = "access"
+    cognito_jwks_cache_seconds: int = Field(default=3_600, ge=60, le=86_400)
+    cognito_clock_skew_seconds: int = Field(default=60, ge=0, le=300)
 
     model_config = SettingsConfigDict(
         env_file="../.env",

@@ -25,6 +25,13 @@ async def initialize_database() -> None:
         await connection.run_sync(Base.metadata.create_all)
 
 
+async def check_database_connection() -> None:
+    """Execute a minimal query for readiness probes without mutating state."""
+
+    async with engine.connect() as connection:
+        await connection.execute(text("SELECT 1"))
+
+
 async def dispose_database() -> None:
     await engine.dispose()
 

@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import Principal, get_current_principal, require_user_access
 from app.db.session import get_database_session
 from app.schemas import (
     CompleteSessionResponse,
@@ -31,6 +32,7 @@ from app.services.sessions import (
 
 router = APIRouter(prefix="/v1", tags=["workouts"])
 DbSession = Annotated[AsyncSession, Depends(get_database_session)]
+PrincipalDep = Annotated[Principal, Depends(get_current_principal)]
 
 
 def missing_session(session_id: str) -> HTTPException:
@@ -39,25 +41,45 @@ def missing_session(session_id: str) -> HTTPException:
     )
 
 
+async def read_owned_session(
+    session_id: str, principal: Principal, db: AsyncSession
+):
+    """Load a session and ensure its owner is the authenticated athlete."""
+
+    try:
+        workout = await get_session(db, session_id)
+    except SessionNotFoundError as error:
+        raise missing_session(session_id) from error
+    require_user_access(principal, workout.user_id)
+    return workout
+
+
 @router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
-async def start_session(request: CreateSessionRequest, db: DbSession) -> SessionResponse:
+async def start_session(
+    request: CreateSessionRequest, principal: PrincipalDep, db: DbSession
+) -> SessionResponse:
+    require_user_access(principal, request.user_id)
     return to_session_response(await create_session(db, request))
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
-async def read_session(session_id: str, db: DbSession) -> SessionDetailResponse:
-    try:
-        return to_session_detail_response(await get_session(db, session_id))
-    except SessionNotFoundError as error:
-        raise missing_session(session_id) from error
+async def read_session(
+    session_id: str, principal: PrincipalDep, db: DbSession
+) -> SessionDetailResponse:
+    return to_session_detail_response(await read_owned_session(session_id, principal, db))
 
 
 @router.post(
     "/sessions/{session_id}/reps", response_model=RepResponse, status_code=status.HTTP_201_CREATED
 )
 async def ingest_rep(
-    session_id: str, request: RecordRepRequest, response: Response, db: DbSession
+    session_id: str,
+    request: RecordRepRequest,
+    response: Response,
+    principal: PrincipalDep,
+    db: DbSession,
 ) -> RepResponse:
+    await read_owned_session(session_id, principal, db)
     try:
         rep, was_replayed = await record_rep(db, session_id, request)
     except SessionNotFoundError as error:
@@ -74,7 +96,10 @@ async def ingest_rep(
 
 
 @router.post("/sessions/{session_id}/complete", response_model=CompleteSessionResponse)
-async def finish_session(session_id: str, db: DbSession) -> CompleteSessionResponse:
+async def finish_session(
+    session_id: str, principal: PrincipalDep, db: DbSession
+) -> CompleteSessionResponse:
+    await read_owned_session(session_id, principal, db)
     try:
         workout = await complete_session(db, session_id)
     except SessionNotFoundError as error:
@@ -89,7 +114,10 @@ async def finish_session(session_id: str, db: DbSession) -> CompleteSessionRespo
 
 
 @router.get("/dashboard/{user_id}/summary", response_model=DashboardSummaryResponse)
-async def get_dashboard_summary(user_id: str, db: DbSession) -> DashboardSummaryResponse:
+async def get_dashboard_summary(
+    user_id: str, principal: PrincipalDep, db: DbSession
+) -> DashboardSummaryResponse:
+    require_user_access(principal, user_id)
     cache_key = dashboard_key(user_id)
     cached = await read_json(cache_key)
     if cached is not None:

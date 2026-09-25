@@ -26,6 +26,12 @@ def get_cache() -> Redis:
     return _client
 
 
+async def check_cache_connection() -> None:
+    """Ping Redis for an orchestration readiness probe."""
+
+    await get_cache().ping()
+
+
 async def read_json(key: str) -> dict[str, Any] | None:
     try:
         cached = await get_cache().get(key)
