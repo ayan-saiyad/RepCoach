@@ -4,30 +4,7 @@ RepCoach is an AI-powered strength-training companion that turns pose landmarks 
 
 ![Validation](https://github.com/ayan-saiyad/RepCoach/actions/workflows/ci.yml/badge.svg)
 
-## Why this exists
-
 Most workout trackers record that a set happened. RepCoach focuses on *how* it happened. Each completed repetition includes a numeric score, a form classification, and a concise correction such as “Sit two inches deeper” or “Keep your knees tracking over your toes.” The architecture supports low-latency live feedback while keeping more expensive video analysis asynchronous.
-
-## Product slice
-
-- **Guided squat coach:** a React Native/Expo experience with a deterministic pose-stream demo, a rep state machine, live form cues, and API sync.
-- **Workout API:** FastAPI + PostgreSQL models for sessions, reps, and coaching plans; Redis response caching; OpenAPI documentation.
-- **Analysis worker:** Kafka consumer that scores pose features with a PyTorch-compatible classifier adapter and publishes feedback events.
-- **Progress dashboard:** Next.js dashboard for weekly volume, form trends, personal records, and an actionable coaching summary.
-- **Platform adapters:** interfaces and local fallbacks for AWS Bedrock coaching, Stripe entitlements, Twilio reminders, and MediaPipe/native-camera ingestion. No cloud credential is needed to run the demo.
-
-## Architecture
-
-```text
-Expo mobile app ── pose frames / completed reps ──► FastAPI ──► PostgreSQL + Redis
-        │                                                │
-        └──────── live local rep engine                  └──► Kafka topic
-                                                                 │
-Next.js dashboard ◄── REST API / cached summary ◄── analysis worker
-                                                    (PyTorch classifier adapter)
-```
-
-The client-side engine provides immediate UI feedback. The backend pipeline produces an auditable server-side result and leaves a clean seam for uploaded-video analysis at scale.
 
 ## Repository layout
 
@@ -84,16 +61,3 @@ npm run dashboard:lint
 npm run mobile:typecheck
 ```
 
-## Engineering decisions
-
-- The rep engine is intentionally deterministic and tested; a learned PyTorch model augments it rather than becoming a black box that can silently miscount.
-- Kafka is used only across the asynchronous boundary. A user gets immediate device-side feedback even when a worker is slow or temporarily unavailable.
-- Bedrock, Twilio, and Stripe are isolated behind ports so the app remains locally runnable and secrets never leak into client bundles.
-- Postgres owns durable workout history; Redis caches read-heavy summaries; pgvector stores coachable workout-context embeddings for semantic retrieval.
-
-## What is implemented vs. configurable
-
-The default demo is intentionally useful without third-party keys: it includes a deterministic pose replay, tested rep state machine, transactional outbox, Kafka-backed worker, responsive progress dashboard, and retrieval-backed local coach. MediaPipe camera capture, a trained PyTorch artifact, Bedrock generation, Stripe Checkout, and Twilio delivery are implemented behind server-side adapters and switch on only when their appropriate native runtime or credentials are configured. That gives the repository a runnable evidence path without pretending that a local demo sent an SMS, charged a card, or analyzed raw video.
-
-See [docs/architecture.md](docs/architecture.md) for the data flow, schemas, and production hardening path.
-See [docs/demo-script.md](docs/demo-script.md) for a concise walkthrough, [docs/operations.md](docs/operations.md) for local-stack operations, and [docs/deployment.md](docs/deployment.md) for the full AWS release path.
