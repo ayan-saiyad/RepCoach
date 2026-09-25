@@ -23,6 +23,12 @@ Server-only variables belong in your secret manager, never in either client app:
 
 The default configuration uses deterministic local fallbacks, making accidental payment, SMS, or Bedrock usage impossible during development.
 
+For Amazon MSK Serverless, set `KAFKA_AUTH_MODE=msk_iam`, set
+`KAFKA_AWS_REGION`, and use the MSK IAM bootstrap brokers. The API/worker ECS
+task role supplies credentials through Boto3's default credential chain; do not
+store static AWS credentials in an environment variable. Local Docker and
+Redpanda remain on `KAFKA_AUTH_MODE=plaintext`.
+
 ## Production checklist
 
 1. Set `AUTO_CREATE_SCHEMA=false` and run Alembic migrations as a deployment job.

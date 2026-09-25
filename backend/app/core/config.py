@@ -1,6 +1,7 @@
 """Environment-backed application settings."""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,6 +16,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://repcoach:repcoach_local_only@localhost:5433/repcoach"
     redis_url: str = "redis://localhost:6380/0"
     kafka_bootstrap_servers: str = "localhost:19092"
+    kafka_auth_mode: Literal["plaintext", "msk_iam"] = "plaintext"
+    kafka_aws_region: str | None = None
     cors_origins: str = "http://localhost:3000,http://localhost:8081"
     form_model_path: str | None = None
     bedrock_region: str = "us-east-1"
