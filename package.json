@@ -1,0 +1,21 @@
+{
+  "name": "repcoach",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI strength-training coach monorepo",
+  "workspaces": [
+    "apps/dashboard",
+    "apps/mobile"
+  ],
+  "scripts": {
+    "dashboard:dev": "npm run dev --workspace=@repcoach/dashboard",
+    "dashboard:build": "npm run build --workspace=@repcoach/dashboard",
+    "dashboard:lint": "npm run lint --workspace=@repcoach/dashboard",
+    "mobile:dev": "npm run start --workspace=@repcoach/mobile",
+    "mobile:typecheck": "npm run typecheck --workspace=@repcoach/mobile"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  }
+}
