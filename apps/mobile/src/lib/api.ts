@@ -68,11 +68,51 @@ export class ApiError extends Error {
   }
 }
 
-const configuredBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
-export const apiBaseUrl = (configuredBaseUrl ?? "http://localhost:8000").replace(/\/$/, "");
+const isDevelopmentBuild = typeof __DEV__ !== "undefined" && __DEV__;
+const configuredBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+const developmentBaseUrl = isDevelopmentBuild ? "http://localhost:8000" : "";
+
+/**
+ * Public build settings are intentionally limited to a public API origin.
+ * Secrets must never be placed in an EXPO_PUBLIC_ variable.
+ */
+export const apiBaseUrl = (configuredBaseUrl || developmentBaseUrl).replace(/\/$/, "");
 
 export function isLoopbackApiUrl(baseUrl = apiBaseUrl): boolean {
-  return /:\/\/(localhost|127\.0\.0\.1)(?::|\/|$)/i.test(baseUrl);
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "0.0.0.0";
+  } catch {
+    return false;
+  }
+}
+
+/** Returns a user-safe explanation instead of sending a release build to localhost. */
+export function apiConfigurationError(baseUrl = apiBaseUrl): string | null {
+  if (!baseUrl) {
+    return "Cloud sync is not configured for this build. Replay feedback remains available on this device.";
+  }
+
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return "The RepCoach API URL is invalid. Replay feedback remains available on this device.";
+  }
+
+  if (url.protocol !== "https:" && !(isDevelopmentBuild && url.protocol === "http:")) {
+    return "Cloud sync requires a secure HTTPS API URL in release builds.";
+  }
+
+  if (!isDevelopmentBuild && isLoopbackApiUrl(baseUrl)) {
+    return "This build points to a device-local API address. Install a build configured with a public HTTPS API URL to sync workouts.";
+  }
+
+  return null;
+}
+
+export function isApiConfigured(baseUrl = apiBaseUrl): boolean {
+  return apiConfigurationError(baseUrl) === null;
 }
 
 export function toApiFeatures(features: SquatRepFeatures): ApiRepFeatures {
@@ -144,6 +184,9 @@ export class RepCoachApiClient {
   }
 
   private async requestWithResponse<T>(path: string, init: RequestInit): Promise<{ payload: T; headers: Headers }> {
+    const configurationError = apiConfigurationError(this.baseUrl);
+    if (configurationError) throw new ApiError(configurationError);
+
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {

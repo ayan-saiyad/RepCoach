@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AppState,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -11,8 +12,20 @@ import {
 
 import { PoseStage } from "./src/components/pose-stage";
 import { RepHistory } from "./src/components/rep-history";
-import { apiBaseUrl, ApiError, isLoopbackApiUrl, makePendingRepUpload, RepCoachApiClient } from "./src/lib/api";
+import {
+  apiBaseUrl,
+  apiConfigurationError,
+  ApiError,
+  isLoopbackApiUrl,
+  makePendingRepUpload,
+  RepCoachApiClient,
+} from "./src/lib/api";
 import { createDemoSquatReplay, DEMO_REP_TARGET, replayDelayMs } from "./src/lib/demo-pose-stream";
+import {
+  readPendingRepUploads,
+  removePendingRepUpload,
+  savePendingRepUpload,
+} from "./src/lib/pending-upload-store";
 import { cueForPhase, type PoseFrame, type RepEvent, SquatRepEngine, type SquatPhase } from "./src/lib/rep-engine";
 import { demoAvailability } from "./src/pose/mediapipe-native";
 import { colors, radii, scoreColor, spacing } from "./src/theme";
@@ -24,6 +37,12 @@ const DEMO_USER = {
 } as const;
 
 const initialReplay = createDemoSquatReplay();
+
+type PendingRepUpload = {
+  event: RepEvent;
+  idempotencyKey: string;
+  createdAt: string;
+};
 
 function syncPresentation(state: SyncState): { label: string; color: string } {
   switch (state) {
@@ -50,10 +69,14 @@ function averageScore(reps: readonly LocalRep[]): number | null {
 }
 
 function defaultConnectionNote(): string {
-  if (isLoopbackApiUrl()) {
-    return "Replay works without the API. For a physical phone, set EXPO_PUBLIC_API_BASE_URL to your computer's LAN or HTTPS address.";
+  const configurationError = apiConfigurationError();
+  if (configurationError) {
+    return `${configurationError} This build runs a deterministic three-rep replay, not live camera capture.`;
   }
-  return "Your rep events will be saved to the coaching API when it is available.";
+  if (isLoopbackApiUrl()) {
+    return "Replay works without cloud sync. For a physical phone, set EXPO_PUBLIC_API_BASE_URL to your computer's LAN address during development or to HTTPS for a release build.";
+  }
+  return "Replay-derived rep features will sync to the coaching API when it is available.";
 }
 
 export default function App() {
@@ -64,9 +87,8 @@ export default function App() {
   const sessionIdRef = useRef<string | null>(null);
   const sessionStartingRef = useRef(false);
   const syncPromiseRef = useRef<Promise<boolean> | null>(null);
-  const pendingUploadsRef = useRef<
-    Array<{ event: RepEvent; idempotencyKey: string }>
-  >([]);
+  const recoveredSyncPromiseRef = useRef<Promise<boolean> | null>(null);
+  const pendingUploadsRef = useRef<PendingRepUpload[]>([]);
 
   const [frame, setFrame] = useState<PoseFrame>(initialReplay[0]);
   const [phase, setPhase] = useState<SquatPhase>("standing");
@@ -98,6 +120,56 @@ export default function App() {
     setReps((current) => current.map((rep) => ({ ...rep, uploadState })));
   }, []);
 
+  const persistInMemoryUploads = useCallback(async (sessionId: string): Promise<void> => {
+    for (const upload of pendingUploadsRef.current) {
+      await savePendingRepUpload({ sessionId, ...upload });
+    }
+  }, []);
+
+  /**
+   * Retries uploads that survived a process restart. This is deliberately
+   * separate from the current set so an older offline session cannot block
+   * the user from continuing a new replay.
+   */
+  const flushRecoveredUploads = useCallback((): Promise<boolean> => {
+    if (recoveredSyncPromiseRef.current) return recoveredSyncPromiseRef.current;
+
+    const work = (async (): Promise<boolean> => {
+      let uploads;
+      try {
+        uploads = await readPendingRepUploads();
+      } catch {
+        return false;
+      }
+      if (uploads.length === 0) return true;
+
+      for (const upload of uploads) {
+        try {
+          await api.recordRep(upload.sessionId, upload.event, upload.idempotencyKey);
+          await removePendingRepUpload(upload.idempotencyKey);
+        } catch (error) {
+          setSyncState("offline");
+          setConnectionNote(
+            error instanceof ApiError
+              ? `${error.message} ${uploads.length} saved rep${uploads.length === 1 ? " is" : "s are"} waiting to retry on this device.`
+              : `${uploads.length} saved rep${uploads.length === 1 ? " is" : "s are"} waiting to retry on this device.`,
+          );
+          return false;
+        }
+      }
+
+      setConnectionNote("Previously saved replay reps synced successfully.");
+      return true;
+    })();
+    recoveredSyncPromiseRef.current = work;
+    void work
+      .finally(() => {
+        if (recoveredSyncPromiseRef.current === work) recoveredSyncPromiseRef.current = null;
+      })
+      .catch(() => undefined);
+    return work;
+  }, [api]);
+
   const flushPendingUploads = useCallback((): Promise<boolean> => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return Promise.resolve(false);
@@ -109,8 +181,11 @@ export default function App() {
         const next = pendingUploadsRef.current[0];
         updateUpload(next.idempotencyKey, "uploading");
         try {
+          // Write first: a terminated app can replay safely with the same key.
+          await savePendingRepUpload({ sessionId, ...next });
           const saved = await api.recordRep(sessionId, next.event, next.idempotencyKey);
           if (runId !== runIdRef.current) return false;
+          await removePendingRepUpload(next.idempotencyKey);
           pendingUploadsRef.current.shift();
           updateUpload(next.idempotencyKey, "synced", {
             score: saved.rep.preliminary_score,
@@ -122,8 +197,8 @@ export default function App() {
             setSyncState("offline");
             setConnectionNote(
               error instanceof ApiError
-                ? `${error.message} Your completed rep stays queued on this device.`
-                : "Rep sync paused. Your completed rep stays queued on this device.",
+                ? `${error.message} Your completed replay rep is saved on this device and will retry later.`
+                : "Rep sync paused. Your completed replay rep is saved on this device and will retry later.",
             );
           }
           return false;
@@ -158,8 +233,9 @@ export default function App() {
       });
       if (runId !== runIdRef.current) return false;
       sessionIdRef.current = session.id;
+      await persistInMemoryUploads(session.id);
       setSyncState("synced");
-      setConnectionNote("Connected to the workout API. Rep features, not raw video, are being saved.");
+      setConnectionNote("Connected to the workout API. Replay-derived features, not raw video, are being saved.");
       void flushPendingUploads();
       return true;
     } catch (error) {
@@ -168,30 +244,40 @@ export default function App() {
       markAllUploads("offline");
       setConnectionNote(
         error instanceof ApiError
-          ? `${error.message} The local rep engine is still running normally.`
-          : "The coaching API is unavailable. The local rep engine is still running normally.",
+          ? `${error.message} Replay feedback remains available while this screen stays open.`
+          : "The coaching API is unavailable. Replay feedback remains available while this screen stays open.",
       );
       return false;
     } finally {
       if (runId === runIdRef.current) sessionStartingRef.current = false;
     }
-  }, [api, flushPendingUploads, markAllUploads]);
+  }, [api, flushPendingUploads, markAllUploads, persistInMemoryUploads]);
 
   const enqueueRep = useCallback(
     (event: RepEvent) => {
       const pending = makePendingRepUpload(event);
-      pendingUploadsRef.current.push(pending);
+      const upload: PendingRepUpload = { ...pending, createdAt: new Date().toISOString() };
+      pendingUploadsRef.current.push(upload);
       setReps((current) => [
         ...current,
         {
           event,
-          idempotencyKey: pending.idempotencyKey,
+          idempotencyKey: upload.idempotencyKey,
           uploadState: sessionIdRef.current || sessionStartingRef.current ? "pending" : "offline",
         },
       ]);
-      if (sessionIdRef.current) void flushPendingUploads();
+      const sessionId = sessionIdRef.current;
+      if (sessionId) {
+        void savePendingRepUpload({ sessionId, ...upload })
+          .then(() => flushPendingUploads())
+          .catch(() => {
+            updateUpload(upload.idempotencyKey, "offline");
+            setSyncState("offline");
+            setConnectionNote("This replay rep could not be stored safely on this device. Keep the app open and try syncing again.");
+          });
+      }
     },
-    [flushPendingUploads],
+    [flushPendingUploads, updateUpload],
   );
 
   const playFrame = useCallback(
@@ -243,16 +329,17 @@ export default function App() {
     setSyncState("connecting");
     setIsPlaying(true);
 
+    void flushRecoveredUploads();
     void establishSession();
     playFrame(0, runId);
-  }, [establishSession, playFrame]);
+  }, [establishSession, flushRecoveredUploads, playFrame]);
 
   const finishSession = useCallback(async () => {
     if (isPlaying || syncState === "finishing" || syncState === "finished") return;
 
     const connected = await establishSession();
     if (!connected || !sessionIdRef.current) {
-      setConnectionNote("The set is safe on this device. Reconnect to the API, then tap Finish & save again.");
+      setConnectionNote("This replay has not opened a cloud session yet. Reconnect, keep the app open, then tap Finish & save again.");
       return;
     }
 
@@ -275,8 +362,8 @@ export default function App() {
       setSyncState("offline");
       setConnectionNote(
         error instanceof ApiError
-          ? `${error.message} Your reps are already queued/saved; try finishing again once the API is back.`
-          : "Could not close this session yet. Your reps are already queued/saved; try again after reconnecting.",
+          ? `${error.message} The replay reps were already acknowledged by the API; try finishing again once it is back.`
+          : "Could not close this session yet. The replay reps were already acknowledged by the API; try again after reconnecting.",
       );
     }
   }, [api, establishSession, flushPendingUploads, isPlaying, syncState]);
@@ -287,6 +374,14 @@ export default function App() {
     },
     [],
   );
+
+  useEffect(() => {
+    void flushRecoveredUploads();
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") void flushRecoveredUploads();
+    });
+    return () => subscription.remove();
+  }, [flushRecoveredUploads]);
 
   const latestRep = reps[reps.length - 1];
   const latestScore = latestRep ? latestRep.serverScore ?? latestRep.event.assessment.score : null;
@@ -325,7 +420,7 @@ export default function App() {
           <View style={styles.heroCopy}>
             <Text style={styles.eyebrow}>GUIDED MOVEMENT</Text>
             <Text style={styles.exercise}>Bodyweight{`\n`}Squat</Text>
-            <Text style={styles.heroDescription}>Local pose scoring, instant cues, and an auditable workout record.</Text>
+            <Text style={styles.heroDescription}>A deterministic pose replay with local scoring, instant cues, and an auditable workout record.</Text>
           </View>
           <View style={styles.scoreOrbWrap}>
             <View style={[styles.scoreOrb, latestScore !== null && { borderColor: scoreColor(latestScore) }]}>
@@ -346,7 +441,7 @@ export default function App() {
             <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
           </View>
           <View style={styles.progressFooter}>
-            <Text style={styles.progressHint}>{isPlaying ? "Counting locally from pose frames" : "Each rep is scored on-device first"}</Text>
+            <Text style={styles.progressHint}>{isPlaying ? "Scoring deterministic replay frames" : "Each replayed rep is scored on-device first"}</Text>
             <Text style={styles.average}>AVG {score ?? "—"}</Text>
           </View>
         </View>
@@ -363,7 +458,7 @@ export default function App() {
               <Text style={styles.coachTitle}>{isPlaying ? phase.toUpperCase() : latestRep ? "Movement cue" : "Ready when you are"}</Text>
             </View>
           </View>
-          <Text style={styles.coachCue}>{liveCue ?? "Stand in full view with your feet planted. The replay will walk through three scored squat reps."}</Text>
+          <Text style={styles.coachCue}>{liveCue ?? "This demo replays three scored squat reps. Live camera analysis requires the native MediaPipe adapter."}</Text>
           <View style={styles.coachDivider} />
           <Text style={styles.coachSafety}>Coaching feedback only—not medical or injury-risk advice. Stop if you feel pain.</Text>
         </View>
@@ -409,15 +504,15 @@ export default function App() {
             <Text style={styles.integrationIconText}>⌁</Text>
           </View>
           <View style={styles.integrationCopy}>
-            <Text style={styles.integrationEyebrow}>NATIVE CAMERA SEAM</Text>
-            <Text style={styles.integrationTitle}>MediaPipe-ready, demo-honest.</Text>
+            <Text style={styles.integrationEyebrow}>DEMO MODE</Text>
+            <Text style={styles.integrationTitle}>Replay-first, MediaPipe-ready.</Text>
             <Text style={styles.integrationBody}>{demoAvailability.reason}</Text>
           </View>
         </View>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>API: {apiBaseUrl}</Text>
-          <Text style={styles.footerText}>POSE FEATURES • NO RAW VIDEO</Text>
+          <Text style={styles.footerText}>API: {apiBaseUrl || "NOT CONFIGURED"}</Text>
+          <Text style={styles.footerText}>REPLAY FEATURES • NO RAW VIDEO</Text>
         </View>
       </ScrollView>
     </SafeAreaView>

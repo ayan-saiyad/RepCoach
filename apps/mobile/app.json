@@ -7,6 +7,13 @@
     "userInterfaceStyle": "dark",
     "scheme": "repcoach",
     "newArchEnabled": true,
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.repcoach.mobile"
@@ -16,6 +23,9 @@
     },
     "web": {
       "bundler": "metro"
-    }
+    },
+    "plugins": [
+      "expo-sqlite"
+    ]
   }
 }
