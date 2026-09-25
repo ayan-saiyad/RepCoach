@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+node_modules
+**/node_modules
+**/.next
+**/.expo
+**/dist
+**/coverage
+backend/.venv
+backend/.pytest_cache
+backend/.ruff_cache
+infra/cdk.out
+*.tsbuildinfo

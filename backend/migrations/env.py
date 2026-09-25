@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 from logging.config import fileConfig
 
 from alembic import context
@@ -15,7 +16,8 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+settings = get_settings()
+config.set_main_option("sqlalchemy.url", settings.resolved_database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -43,7 +45,10 @@ def do_run_migrations(connection: Connection) -> None:
 async def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section, {})
     connectable = async_engine_from_config(
-        configuration, prefix="sqlalchemy.", poolclass=pool.NullPool
+        configuration,
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+        connect_args={"ssl": ssl.create_default_context()} if settings.database_ssl else {},
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

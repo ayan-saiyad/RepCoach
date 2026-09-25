@@ -1,5 +1,6 @@
 """Async database session lifecycle."""
 
+import ssl
 from collections.abc import AsyncIterator
 
 from sqlalchemy import text
@@ -12,7 +13,10 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 
 settings = get_settings()
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+connect_args = {"ssl": ssl.create_default_context()} if settings.database_ssl else {}
+engine = create_async_engine(
+    settings.resolved_database_url, pool_pre_ping=True, connect_args=connect_args
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

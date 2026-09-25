@@ -96,4 +96,4 @@ npm run mobile:typecheck
 The default demo is intentionally useful without third-party keys: it includes a deterministic pose replay, tested rep state machine, transactional outbox, Kafka-backed worker, responsive progress dashboard, and retrieval-backed local coach. MediaPipe camera capture, a trained PyTorch artifact, Bedrock generation, Stripe Checkout, and Twilio delivery are implemented behind server-side adapters and switch on only when their appropriate native runtime or credentials are configured. That gives the repository a runnable evidence path without pretending that a local demo sent an SMS, charged a card, or analyzed raw video.
 
 See [docs/architecture.md](docs/architecture.md) for the data flow, schemas, and production hardening path.
-See [docs/demo-script.md](docs/demo-script.md) for a concise walkthrough and [docs/operations.md](docs/operations.md) for local-stack operations.
+See [docs/demo-script.md](docs/demo-script.md) for a concise walkthrough, [docs/operations.md](docs/operations.md) for local-stack operations, and [docs/deployment.md](docs/deployment.md) for the full AWS release path.

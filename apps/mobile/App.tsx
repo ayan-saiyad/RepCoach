@@ -20,6 +20,7 @@ import {
   makePendingRepUpload,
   RepCoachApiClient,
 } from "./src/lib/api";
+import { isDevelopmentReplayEnabled, useRepCoachAuth } from "./src/lib/auth";
 import { createDemoSquatReplay, DEMO_REP_TARGET, replayDelayMs } from "./src/lib/demo-pose-stream";
 import {
   readPendingRepUploads,
@@ -31,7 +32,7 @@ import { demoAvailability } from "./src/pose/mediapipe-native";
 import { colors, radii, scoreColor, spacing } from "./src/theme";
 import type { LocalRep, SyncState, UploadState } from "./src/types";
 
-const DEMO_USER = {
+const DEVELOPMENT_DEMO_USER = {
   id: "demo-athlete",
   name: "Demo Athlete",
 } as const;
@@ -68,19 +69,32 @@ function averageScore(reps: readonly LocalRep[]): number | null {
   );
 }
 
-function defaultConnectionNote(): string {
+function defaultConnectionNote(isSignedIn: boolean): string {
   const configurationError = apiConfigurationError();
   if (configurationError) {
-    return `${configurationError} This build runs a deterministic three-rep replay, not live camera capture.`;
+    return isDevelopmentReplayEnabled
+      ? `${configurationError} This development build runs a deterministic three-rep replay, not live camera capture.`
+      : configurationError;
+  }
+  if (!isDevelopmentReplayEnabled) {
+    return isSignedIn
+      ? "Your account is connected. Install a build with the native MediaPipe camera runtime to start live scoring."
+      : "Sign in with your RepCoach account to connect this app to your training history.";
   }
   if (isLoopbackApiUrl()) {
-    return "Replay works without cloud sync. For a physical phone, set EXPO_PUBLIC_API_BASE_URL to your computer's LAN address during development or to HTTPS for a release build.";
+    return "Replay works without cloud sync. For a physical phone, set EXPO_PUBLIC_API_BASE_URL to your computer's LAN address during development.";
   }
   return "Replay-derived rep features will sync to the coaching API when it is available.";
 }
 
 export default function App() {
-  const api = useMemo(() => new RepCoachApiClient(), []);
+  const auth = useRepCoachAuth();
+  const api = useMemo(() => new RepCoachApiClient(auth.getAccessToken), [auth.getAccessToken]);
+  const workoutUser = auth.user
+    ? { id: auth.user.id, name: auth.user.displayName }
+    : isDevelopmentReplayEnabled
+      ? DEVELOPMENT_DEMO_USER
+      : null;
   const engineRef = useRef(new SquatRepEngine());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runIdRef = useRef(0);
@@ -96,7 +110,7 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [replayComplete, setReplayComplete] = useState(false);
   const [syncState, setSyncState] = useState<SyncState>("idle");
-  const [connectionNote, setConnectionNote] = useState(defaultConnectionNote);
+  const [connectionNote, setConnectionNote] = useState(() => defaultConnectionNote(Boolean(workoutUser)));
   const [coachingNote, setCoachingNote] = useState<string | null>(null);
 
   const updateUpload = useCallback(
@@ -132,6 +146,7 @@ export default function App() {
    * the user from continuing a new replay.
    */
   const flushRecoveredUploads = useCallback((): Promise<boolean> => {
+    if (!isDevelopmentReplayEnabled) return Promise.resolve(true);
     if (recoveredSyncPromiseRef.current) return recoveredSyncPromiseRef.current;
 
     const work = (async (): Promise<boolean> => {
@@ -219,14 +234,19 @@ export default function App() {
   const establishSession = useCallback(async (): Promise<boolean> => {
     if (sessionIdRef.current) return true;
     if (sessionStartingRef.current) return false;
+    if (!workoutUser) {
+      setSyncState("idle");
+      setConnectionNote("Sign in before starting a workout so your session is saved to the right account.");
+      return false;
+    }
 
     const runId = runIdRef.current;
     sessionStartingRef.current = true;
     setSyncState("connecting");
     try {
       const session = await api.createSession({
-        user_id: DEMO_USER.id,
-        display_name: DEMO_USER.name,
+        user_id: workoutUser.id,
+        display_name: workoutUser.name,
         exercise_slug: "bodyweight-squat",
         target_reps: DEMO_REP_TARGET,
         source: "expo-mobile",
@@ -251,7 +271,7 @@ export default function App() {
     } finally {
       if (runId === runIdRef.current) sessionStartingRef.current = false;
     }
-  }, [api, flushPendingUploads, markAllUploads, persistInMemoryUploads]);
+  }, [api, flushPendingUploads, markAllUploads, persistInMemoryUploads, workoutUser]);
 
   const enqueueRep = useCallback(
     (event: RepEvent) => {
@@ -310,6 +330,7 @@ export default function App() {
   );
 
   const startReplay = useCallback(() => {
+    if (!isDevelopmentReplayEnabled) return;
     if (timerRef.current) clearTimeout(timerRef.current);
 
     runIdRef.current += 1;
@@ -325,14 +346,14 @@ export default function App() {
     setReps([]);
     setReplayComplete(false);
     setCoachingNote(null);
-    setConnectionNote(defaultConnectionNote());
+    setConnectionNote(defaultConnectionNote(Boolean(workoutUser)));
     setSyncState("connecting");
     setIsPlaying(true);
 
     void flushRecoveredUploads();
     void establishSession();
     playFrame(0, runId);
-  }, [establishSession, flushRecoveredUploads, playFrame]);
+  }, [establishSession, flushRecoveredUploads, playFrame, workoutUser]);
 
   const finishSession = useCallback(async () => {
     if (isPlaying || syncState === "finishing" || syncState === "finished") return;
@@ -376,6 +397,7 @@ export default function App() {
   );
 
   useEffect(() => {
+    if (!isDevelopmentReplayEnabled) return;
     void flushRecoveredUploads();
     const subscription = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") void flushRecoveredUploads();
@@ -383,19 +405,41 @@ export default function App() {
     return () => subscription.remove();
   }, [flushRecoveredUploads]);
 
+  useEffect(() => {
+    if (!isDevelopmentReplayEnabled && !isPlaying && !replayComplete) {
+      setConnectionNote(defaultConnectionNote(Boolean(auth.user)));
+    }
+  }, [auth.user, isPlaying, replayComplete]);
+
   const latestRep = reps[reps.length - 1];
   const latestScore = latestRep ? latestRep.serverScore ?? latestRep.event.assessment.score : null;
   const liveCue = isPlaying ? cueForPhase(phase) : latestRep?.serverFeedback ?? latestRep?.event.assessment.cue;
   const score = averageScore(reps);
   const progress = Math.min(reps.length / DEMO_REP_TARGET, 1);
   const sync = syncPresentation(syncState);
-  const primaryLabel = isPlaying
-    ? "COACHING IN PROGRESS"
-    : replayComplete && syncState !== "finished"
-      ? "FINISH & SAVE SET"
-      : "RUN 3-REP REPLAY";
-  const primaryAction = replayComplete && syncState !== "finished" ? finishSession : startReplay;
-  const primaryDisabled = isPlaying || syncState === "finishing";
+  const primaryLabel = isDevelopmentReplayEnabled
+    ? isPlaying
+      ? "COACHING IN PROGRESS"
+      : replayComplete && syncState !== "finished"
+        ? "FINISH & SAVE SET"
+        : "RUN 3-REP DEV REPLAY"
+    : auth.isLoading
+      ? "CHECKING ACCOUNT"
+      : auth.isSigningIn
+        ? "OPENING SECURE SIGN-IN"
+        : auth.user
+          ? "LIVE CAMERA RUNTIME REQUIRED"
+          : "SIGN IN TO CONTINUE";
+  const primaryAction = isDevelopmentReplayEnabled
+    ? replayComplete && syncState !== "finished"
+      ? finishSession
+      : startReplay
+    : auth.user
+      ? async () => undefined
+      : auth.signIn;
+  const primaryDisabled = isDevelopmentReplayEnabled
+    ? isPlaying || syncState === "finishing"
+    : auth.isLoading || auth.isSigningIn || Boolean(auth.user);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -420,33 +464,91 @@ export default function App() {
           <View style={styles.heroCopy}>
             <Text style={styles.eyebrow}>GUIDED MOVEMENT</Text>
             <Text style={styles.exercise}>Bodyweight{`\n`}Squat</Text>
-            <Text style={styles.heroDescription}>A deterministic pose replay with local scoring, instant cues, and an auditable workout record.</Text>
+            <Text style={styles.heroDescription}>
+              {isDevelopmentReplayEnabled
+                ? "Development replay with local scoring, instant cues, and an auditable workout record."
+                : "Secure account access is ready. Install the native MediaPipe camera runtime to start live, on-device movement scoring."}
+            </Text>
           </View>
           <View style={styles.scoreOrbWrap}>
             <View style={[styles.scoreOrb, latestScore !== null && { borderColor: scoreColor(latestScore) }]}>
               <Text style={styles.scoreOrbValue}>{latestScore ?? "—"}</Text>
-              <Text style={styles.scoreOrbLabel}>{latestScore === null ? "FORM SCORE" : "LAST REP"}</Text>
+              <Text style={styles.scoreOrbLabel}>
+                {isDevelopmentReplayEnabled ? (latestScore === null ? "FORM SCORE" : "LAST REP") : "LIVE SETUP"}
+              </Text>
             </View>
           </View>
         </View>
 
-        <View style={styles.progressCard}>
-          <View style={styles.progressTopline}>
-            <Text style={styles.progressLabel}>SET PROGRESS</Text>
-            <Text style={styles.progressCount}>
-              {String(reps.length).padStart(2, "0")} <Text style={styles.progressTarget}>/ {String(DEMO_REP_TARGET).padStart(2, "0")}</Text>
+        <View style={styles.accountCard}>
+          <View style={styles.accountCopy}>
+            <Text style={styles.accountEyebrow}>SECURE ACCOUNT</Text>
+            <Text style={styles.accountTitle}>
+              {auth.isLoading ? "Checking your secure session…" : auth.user ? auth.user.displayName : "Sign in to connect your training history"}
+            </Text>
+            <Text style={styles.accountBody}>
+              {auth.user?.email ??
+                (isDevelopmentReplayEnabled
+                  ? "Optional in development; API sync can use the local demo identity."
+                  : auth.configurationError ?? "Authorization-code + PKCE sign-in keeps credentials out of the app bundle.")}
             </Text>
           </View>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
-          </View>
-          <View style={styles.progressFooter}>
-            <Text style={styles.progressHint}>{isPlaying ? "Scoring deterministic replay frames" : "Each replayed rep is scored on-device first"}</Text>
-            <Text style={styles.average}>AVG {score ?? "—"}</Text>
-          </View>
+          {auth.user ? (
+            <Pressable
+              accessibilityLabel="Sign out"
+              accessibilityRole="button"
+              disabled={isPlaying || auth.isSigningIn}
+              onPress={() => void auth.signOut()}
+              style={({ pressed }) => [styles.accountButton, (isPlaying || auth.isSigningIn) && styles.accountButtonDisabled, pressed && styles.accountButtonPressed]}
+            >
+              <Text style={styles.accountButtonText}>SIGN OUT</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              accessibilityLabel="Sign in"
+              accessibilityRole="button"
+              disabled={!auth.isConfigured || auth.isLoading || auth.isSigningIn}
+              onPress={() => void auth.signIn()}
+              style={({ pressed }) => [
+                styles.accountButton,
+                (!auth.isConfigured || auth.isLoading || auth.isSigningIn) && styles.accountButtonDisabled,
+                pressed && auth.isConfigured && !auth.isLoading && !auth.isSigningIn && styles.accountButtonPressed,
+              ]}
+            >
+              <Text style={styles.accountButtonText}>{auth.isSigningIn ? "SIGNING IN" : "SIGN IN"}</Text>
+            </Pressable>
+          )}
         </View>
+        {auth.error ? <Text style={styles.authError}>{auth.error}</Text> : null}
 
-        <PoseStage frame={frame} isPlaying={isPlaying} phase={phase} />
+        {isDevelopmentReplayEnabled ? (
+          <>
+            <View style={styles.progressCard}>
+              <View style={styles.progressTopline}>
+                <Text style={styles.progressLabel}>SET PROGRESS</Text>
+                <Text style={styles.progressCount}>
+                  {String(reps.length).padStart(2, "0")} <Text style={styles.progressTarget}>/ {String(DEMO_REP_TARGET).padStart(2, "0")}</Text>
+                </Text>
+              </View>
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
+              </View>
+              <View style={styles.progressFooter}>
+                <Text style={styles.progressHint}>{isPlaying ? "Scoring deterministic replay frames" : "Each replayed rep is scored on-device first"}</Text>
+                <Text style={styles.average}>AVG {score ?? "—"}</Text>
+              </View>
+            </View>
+            <PoseStage frame={frame} isPlaying={isPlaying} phase={phase} />
+          </>
+        ) : (
+          <View style={styles.liveSetupCard}>
+            <Text style={styles.liveSetupEyebrow}>LIVE COACHING</Text>
+            <Text style={styles.liveSetupTitle}>Native pose runtime required</Text>
+            <Text style={styles.liveSetupBody}>
+              This signed build will not substitute simulated motion for a camera workout. Add the MediaPipe native adapter before releasing live form scoring.
+            </Text>
+          </View>
+        )}
 
         <View style={styles.coachCard}>
           <View style={styles.coachHeader}>
@@ -454,11 +556,20 @@ export default function App() {
               <Text style={styles.coachMarkerText}>AI</Text>
             </View>
             <View style={styles.coachHeaderCopy}>
-              <Text style={styles.coachEyebrow}>{latestRep ? "REP-SPECIFIC COACHING" : "STARTING POSITION"}</Text>
-              <Text style={styles.coachTitle}>{isPlaying ? phase.toUpperCase() : latestRep ? "Movement cue" : "Ready when you are"}</Text>
+              <Text style={styles.coachEyebrow}>
+                {isDevelopmentReplayEnabled ? (latestRep ? "REP-SPECIFIC COACHING" : "STARTING POSITION") : "RELEASE SAFETY"}
+              </Text>
+              <Text style={styles.coachTitle}>
+                {isDevelopmentReplayEnabled ? (isPlaying ? phase.toUpperCase() : latestRep ? "Movement cue" : "Ready when you are") : "No simulated production workout"}
+              </Text>
             </View>
           </View>
-          <Text style={styles.coachCue}>{liveCue ?? "This demo replays three scored squat reps. Live camera analysis requires the native MediaPipe adapter."}</Text>
+          <Text style={styles.coachCue}>
+            {liveCue ??
+              (isDevelopmentReplayEnabled
+                ? "This development build replays three scored squat reps. Live camera analysis requires the native MediaPipe adapter."
+                : "Cognito authentication and API authorization are production-ready; the camera pipeline is deliberately held until native pose capture is installed.")}
+          </Text>
           <View style={styles.coachDivider} />
           <Text style={styles.coachSafety}>Coaching feedback only—not medical or injury-risk advice. Stop if you feel pain.</Text>
         </View>
@@ -475,7 +586,7 @@ export default function App() {
             accessibilityLabel={primaryLabel}
             accessibilityRole="button"
             disabled={primaryDisabled}
-            onPress={primaryAction}
+            onPress={() => void primaryAction()}
             style={({ pressed }) => [
               styles.primaryButton,
               primaryDisabled && styles.primaryButtonDisabled,
@@ -485,7 +596,7 @@ export default function App() {
             <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
             <Text style={styles.primaryButtonArrow}>→</Text>
           </Pressable>
-          {replayComplete && syncState === "finished" ? (
+          {isDevelopmentReplayEnabled && replayComplete && syncState === "finished" ? (
             <Pressable accessibilityRole="button" onPress={startReplay} style={({ pressed }) => [styles.secondaryButton, pressed && styles.secondaryButtonPressed]}>
               <Text style={styles.secondaryButtonText}>RUN AGAIN</Text>
             </Pressable>
@@ -493,26 +604,34 @@ export default function App() {
           <Text style={styles.connectionNote}>{connectionNote}</Text>
         </View>
 
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>REP LOG</Text>
-          <Text style={styles.sectionMeta}>{reps.length === 0 ? "AWAITING MOTION" : `${reps.length} LOCALLY VERIFIED`}</Text>
-        </View>
-        <RepHistory reps={reps} />
+        {isDevelopmentReplayEnabled ? (
+          <>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>REP LOG</Text>
+              <Text style={styles.sectionMeta}>{reps.length === 0 ? "AWAITING MOTION" : `${reps.length} LOCALLY VERIFIED`}</Text>
+            </View>
+            <RepHistory reps={reps} />
+          </>
+        ) : null}
 
         <View style={styles.integrationCard}>
           <View style={styles.integrationIcon}>
             <Text style={styles.integrationIconText}>⌁</Text>
           </View>
           <View style={styles.integrationCopy}>
-            <Text style={styles.integrationEyebrow}>DEMO MODE</Text>
-            <Text style={styles.integrationTitle}>Replay-first, MediaPipe-ready.</Text>
-            <Text style={styles.integrationBody}>{demoAvailability.reason}</Text>
+            <Text style={styles.integrationEyebrow}>{isDevelopmentReplayEnabled ? "DEVELOPMENT REPLAY" : "PRODUCTION IDENTITY"}</Text>
+            <Text style={styles.integrationTitle}>{isDevelopmentReplayEnabled ? "Replay-first, MediaPipe-ready." : "PKCE sign-in, OS-protected tokens."}</Text>
+            <Text style={styles.integrationBody}>
+              {isDevelopmentReplayEnabled
+                ? demoAvailability.reason
+                : "The API receives a Cognito bearer token and validates its subject for every saved workout."}
+            </Text>
           </View>
         </View>
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>API: {apiBaseUrl || "NOT CONFIGURED"}</Text>
-          <Text style={styles.footerText}>REPLAY FEATURES • NO RAW VIDEO</Text>
+          <Text style={styles.footerText}>{isDevelopmentReplayEnabled ? "DEV REPLAY FEATURES • NO RAW VIDEO" : "PRODUCTION AUTH • NO RAW VIDEO"}</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -538,6 +657,16 @@ const styles = StyleSheet.create({
   scoreOrb: { alignItems: "center", backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 50, borderWidth: 5, height: 92, justifyContent: "center", width: 92 },
   scoreOrbValue: { color: colors.text, fontSize: 28, fontVariant: ["tabular-nums"], fontWeight: "900", lineHeight: 31 },
   scoreOrbLabel: { color: colors.textFaint, fontSize: 8, fontWeight: "900", letterSpacing: 0.65, marginTop: 1 },
+  accountCard: { alignItems: "center", backgroundColor: colors.surfaceRaised, borderColor: colors.border, borderRadius: radii.md, borderWidth: 1, flexDirection: "row", marginBottom: spacing.md, padding: spacing.md },
+  accountCopy: { flex: 1, paddingRight: spacing.sm },
+  accountEyebrow: { color: colors.mint, fontSize: 9, fontWeight: "900", letterSpacing: 1.1 },
+  accountTitle: { color: colors.text, fontSize: 13, fontWeight: "800", lineHeight: 18, marginTop: 3 },
+  accountBody: { color: colors.textFaint, fontSize: 10, lineHeight: 14, marginTop: 4 },
+  accountButton: { alignItems: "center", borderColor: colors.mint, borderRadius: radii.pill, borderWidth: 1, justifyContent: "center", minHeight: 36, paddingHorizontal: 11 },
+  accountButtonDisabled: { borderColor: colors.border, opacity: 0.55 },
+  accountButtonPressed: { backgroundColor: colors.surfaceMuted },
+  accountButtonText: { color: colors.mint, fontSize: 9, fontWeight: "900", letterSpacing: 0.85 },
+  authError: { color: colors.orange, fontSize: 11, lineHeight: 16, marginBottom: spacing.sm, marginTop: -4 },
   progressCard: { backgroundColor: colors.canvasElevated, borderColor: colors.borderSubtle, borderRadius: radii.md, borderWidth: 1, marginBottom: spacing.md, padding: spacing.md },
   progressTopline: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   progressLabel: { color: colors.textMuted, fontSize: 10, fontWeight: "900", letterSpacing: 1.1 },
@@ -548,6 +677,10 @@ const styles = StyleSheet.create({
   progressFooter: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", marginTop: 9 },
   progressHint: { color: colors.textFaint, fontSize: 11 },
   average: { color: colors.mint, fontSize: 11, fontVariant: ["tabular-nums"], fontWeight: "900", letterSpacing: 0.7 },
+  liveSetupCard: { backgroundColor: colors.canvasElevated, borderColor: colors.borderSubtle, borderRadius: radii.lg, borderWidth: 1, marginBottom: spacing.md, padding: spacing.lg },
+  liveSetupEyebrow: { color: colors.orange, fontSize: 10, fontWeight: "900", letterSpacing: 1.25 },
+  liveSetupTitle: { color: colors.text, fontSize: 17, fontWeight: "900", marginTop: 5 },
+  liveSetupBody: { color: colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: 7 },
   coachCard: { backgroundColor: colors.surfaceRaised, borderColor: colors.border, borderRadius: radii.lg, borderWidth: 1, marginTop: spacing.md, padding: spacing.md },
   coachHeader: { alignItems: "center", flexDirection: "row" },
   coachMarker: { alignItems: "center", backgroundColor: colors.lime, borderRadius: 16, height: 32, justifyContent: "center", marginRight: 10, width: 32 },

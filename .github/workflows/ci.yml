@@ -41,6 +41,19 @@ jobs:
       - run: npm run mobile:typecheck
       - run: npm run dashboard:build
 
+  infrastructure:
+    name: Infrastructure synthesis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run infra:build
+      - run: npm run infra:synth
+
   containers:
     name: Container configuration
     runs-on: ubuntu-latest

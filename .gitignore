@@ -6,6 +6,10 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# AWS CDK synthesis and staging assets
+infra/cdk.out/
+.cdk.staging/
+
 # Python
 __pycache__/
 *.py[cod]

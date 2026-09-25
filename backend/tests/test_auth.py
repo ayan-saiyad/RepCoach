@@ -1,5 +1,6 @@
 """Access-control and health-probe contracts independent of a live database."""
 
+import time
 from collections.abc import Iterator
 from typing import Annotated
 
@@ -9,8 +10,8 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import health
 from app.core import auth
-from app.core.auth import Principal, get_current_principal, require_user_access
-from app.core.config import get_settings
+from app.core.auth import CognitoJwtVerifier, Principal, get_current_principal, require_user_access
+from app.core.config import Settings, get_settings
 
 
 def protected_client() -> TestClient:
@@ -137,3 +138,25 @@ async def test_readyz_returns_service_unavailable_for_a_failed_dependency(
         await health.readyz()
 
     assert error.value.status_code == 503
+
+
+def test_cognito_allows_only_explicit_web_and_mobile_client_ids() -> None:
+    settings = Settings(
+        cognito_region="us-east-1",
+        cognito_user_pool_id="us-east-1_example",
+        cognito_app_client_id="dashboard-client",
+        cognito_app_client_ids="dashboard-client,mobile-client",
+    )
+    verifier = CognitoJwtVerifier(settings)
+    claims = {
+        "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example",
+        "token_use": "access",
+        "client_id": "mobile-client",
+        "exp": time.time() + 60,
+    }
+
+    verifier._validate_claims(claims)
+
+    claims["client_id"] = "unapproved-client"
+    with pytest.raises(auth.TokenValidationError, match="audience"):
+        verifier._validate_claims(claims)

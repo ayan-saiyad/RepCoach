@@ -1,0 +1,112 @@
+name: Deploy RepCoach
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "apps/dashboard/**"
+      - "backend/**"
+      - "infra/**"
+      - "package.json"
+      - "package-lock.json"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: repcoach-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy production release
+    runs-on: ubuntu-latest
+    environment: production
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - run: npm ci
+      - run: npm run infra:build
+      - name: Read deployment outputs
+        id: stack
+        run: |
+          echo "api_repository=$(aws cloudformation describe-stacks --stack-name RepCoachProduction --query \"Stacks[0].Outputs[?OutputKey=='ApiRepositoryUri'].OutputValue | [0]\" --output text)" >> "$GITHUB_OUTPUT"
+          echo "dashboard_repository=$(aws cloudformation describe-stacks --stack-name RepCoachProduction --query \"Stacks[0].Outputs[?OutputKey=='DashboardRepositoryUri'].OutputValue | [0]\" --output text)" >> "$GITHUB_OUTPUT"
+          echo "cluster=$(aws cloudformation describe-stacks --stack-name RepCoachProduction --query \"Stacks[0].Outputs[?OutputKey=='ClusterName'].OutputValue | [0]\" --output text)" >> "$GITHUB_OUTPUT"
+          echo "api_task_definition=$(aws cloudformation describe-stacks --stack-name RepCoachProduction --query \"Stacks[0].Outputs[?OutputKey=='ApiTaskDefinitionArn'].OutputValue | [0]\" --output text)" >> "$GITHUB_OUTPUT"
+          echo "topic_bootstrap_task_definition=$(aws cloudformation describe-stacks --stack-name RepCoachProduction --query \"Stacks[0].Outputs[?OutputKey=='TopicBootstrapTaskDefinitionArn'].OutputValue | [0]\" --output text)" >> "$GITHUB_OUTPUT"
+          echo "subnets=$(aws cloudformation describe-stacks --stack-name RepCoachProduction --query \"Stacks[0].Outputs[?OutputKey=='PrivateApplicationSubnetIds'].OutputValue | [0]\" --output text)" >> "$GITHUB_OUTPUT"
+          echo "api_security_group=$(aws cloudformation describe-stacks --stack-name RepCoachProduction --query \"Stacks[0].Outputs[?OutputKey=='ApiSecurityGroupId'].OutputValue | [0]\" --output text)" >> "$GITHUB_OUTPUT"
+          echo "worker_security_group=$(aws cloudformation describe-stacks --stack-name RepCoachProduction --query \"Stacks[0].Outputs[?OutputKey=='WorkerSecurityGroupId'].OutputValue | [0]\" --output text)" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and publish immutable images
+        env:
+          API_REPOSITORY: ${{ steps.stack.outputs.api_repository }}
+          DASHBOARD_REPOSITORY: ${{ steps.stack.outputs.dashboard_repository }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          if aws ecr describe-images --repository-name "${API_REPOSITORY##*/}" --image-ids "imageTag=$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Reusing immutable API image $API_REPOSITORY:$IMAGE_TAG"
+          else
+            docker build --platform linux/arm64 --file backend/Dockerfile --tag "$API_REPOSITORY:$IMAGE_TAG" backend
+            docker push "$API_REPOSITORY:$IMAGE_TAG"
+          fi
+          if aws ecr describe-images --repository-name "${DASHBOARD_REPOSITORY##*/}" --image-ids "imageTag=$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Reusing immutable dashboard image $DASHBOARD_REPOSITORY:$IMAGE_TAG"
+          else
+            docker build --platform linux/arm64 --file apps/dashboard/Dockerfile --tag "$DASHBOARD_REPOSITORY:$IMAGE_TAG" .
+            docker push "$DASHBOARD_REPOSITORY:$IMAGE_TAG"
+          fi
+      - name: Roll out ECS services
+        env:
+          API_IMAGE: ${{ steps.stack.outputs.api_repository }}:${{ github.sha }}
+          DASHBOARD_IMAGE: ${{ steps.stack.outputs.dashboard_repository }}:${{ github.sha }}
+        run: |
+          cd infra
+          ../node_modules/.bin/cdk deploy RepCoachProduction --require-approval never \
+            --parameters ApiImageUri="$API_IMAGE" \
+            --parameters DashboardImageUri="$DASHBOARD_IMAGE" \
+            --parameters DeployServices=true
+      - name: Ensure Kafka topics exist
+        env:
+          CLUSTER: ${{ steps.stack.outputs.cluster }}
+          TASK_DEFINITION: ${{ steps.stack.outputs.topic_bootstrap_task_definition }}
+          SUBNETS: ${{ steps.stack.outputs.subnets }}
+          WORKER_SECURITY_GROUP: ${{ steps.stack.outputs.worker_security_group }}
+        run: |
+          task_arn=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "$TASK_DEFINITION" \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$WORKER_SECURITY_GROUP],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          test -n "$task_arn"
+          test "$task_arn" != "None"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
+          test "$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn" --query 'tasks[0].containers[?name==`topic-bootstrap`].exitCode | [0]' --output text)" = "0"
+      - name: Run one controlled database migration task
+        env:
+          CLUSTER: ${{ steps.stack.outputs.cluster }}
+          TASK_DEFINITION: ${{ steps.stack.outputs.api_task_definition }}
+          SUBNETS: ${{ steps.stack.outputs.subnets }}
+          API_SECURITY_GROUP: ${{ steps.stack.outputs.api_security_group }}
+        run: |
+          task_arn=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "$TASK_DEFINITION" \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$API_SECURITY_GROUP],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","upgrade","head"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
+          test "$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn" --query 'tasks[0].containers[?name==`api`].exitCode | [0]' --output text)" = "0"

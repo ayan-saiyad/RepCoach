@@ -1,10 +1,12 @@
 """RepCoach HTTP entrypoint."""
 
+import hmac
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes import billing, coach, health, reminders, sessions
 from app.core.config import get_settings
@@ -38,6 +40,30 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-RepCoach-Dev-User"],
 )
+
+
+@app.middleware("http")
+async def require_trusted_edge(request: Request, call_next):
+    """Reject direct ALB requests when production is fronted by CloudFront.
+
+    ECS target health probes remain deliberately available so the load balancer
+    can remove unhealthy tasks. Every product/API route requires the random
+    origin header that only the CloudFront distribution receives from Secrets
+    Manager at deploy time.
+    """
+
+    if (
+        settings.edge_origin_required
+        and request.url.path not in {"/health", "/livez", "/readyz"}
+        and (
+            not settings.edge_origin_token
+            or not hmac.compare_digest(
+                request.headers.get("X-RepCoach-Origin", ""), settings.edge_origin_token
+            )
+        )
+    ):
+        return JSONResponse(status_code=403, content={"detail": "Trusted edge required"})
+    return await call_next(request)
 app.include_router(health.router)
 app.include_router(sessions.router)
 app.include_router(coach.router)

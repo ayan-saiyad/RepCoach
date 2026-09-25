@@ -68,6 +68,8 @@ export class ApiError extends Error {
   }
 }
 
+export type AccessTokenProvider = () => Promise<string | null>;
+
 const isDevelopmentBuild = typeof __DEV__ !== "undefined" && __DEV__;
 const configuredBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
 const developmentBaseUrl = isDevelopmentBuild ? "http://localhost:8000" : "";
@@ -89,15 +91,18 @@ export function isLoopbackApiUrl(baseUrl = apiBaseUrl): boolean {
 
 /** Returns a user-safe explanation instead of sending a release build to localhost. */
 export function apiConfigurationError(baseUrl = apiBaseUrl): string | null {
+  const unavailableMessage = isDevelopmentBuild
+    ? "Replay feedback remains available on this device."
+    : "Secure workout sync is unavailable in this build.";
   if (!baseUrl) {
-    return "Cloud sync is not configured for this build. Replay feedback remains available on this device.";
+    return `Cloud sync is not configured for this build. ${unavailableMessage}`;
   }
 
   let url: URL;
   try {
     url = new URL(baseUrl);
   } catch {
-    return "The RepCoach API URL is invalid. Replay feedback remains available on this device.";
+    return `The RepCoach API URL is invalid. ${unavailableMessage}`;
   }
 
   if (url.protocol !== "https:" && !(isDevelopmentBuild && url.protocol === "http:")) {
@@ -149,7 +154,10 @@ function errorMessage(status: number, payload: unknown): string {
 }
 
 export class RepCoachApiClient {
-  public constructor(private readonly baseUrl = apiBaseUrl) {}
+  public constructor(
+    private readonly getAccessToken: AccessTokenProvider = async () => null,
+    private readonly baseUrl = apiBaseUrl,
+  ) {}
 
   public createSession(input: CreateSessionInput): Promise<WorkoutSession> {
     return this.request<WorkoutSession>("/v1/sessions", {
@@ -187,6 +195,11 @@ export class RepCoachApiClient {
     const configurationError = apiConfigurationError(this.baseUrl);
     if (configurationError) throw new ApiError(configurationError);
 
+    const accessToken = await this.getAccessToken();
+    if (!accessToken && !isDevelopmentBuild) {
+      throw new ApiError("Sign in is required before syncing a workout.", 401);
+    }
+
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
@@ -194,6 +207,7 @@ export class RepCoachApiClient {
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
           ...init.headers,
         },
       });

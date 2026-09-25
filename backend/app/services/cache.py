@@ -22,7 +22,7 @@ def dashboard_key(user_id: str) -> str:
 def get_cache() -> Redis:
     global _client
     if _client is None:
-        _client = from_url(get_settings().redis_url, decode_responses=True)
+        _client = from_url(get_settings().resolved_redis_url, decode_responses=True)
     return _client
 
 

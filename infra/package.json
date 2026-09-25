@@ -1,0 +1,22 @@
+{
+  "name": "@repcoach/infra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AWS CDK infrastructure for RepCoach",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy --require-approval never"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.0.0",
+    "constructs": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "aws-cdk": "^2.270.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.8.3"
+  }
+}

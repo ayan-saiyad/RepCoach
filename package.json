@@ -5,12 +5,16 @@
   "description": "AI strength-training coach monorepo",
   "workspaces": [
     "apps/dashboard",
-    "apps/mobile"
+    "apps/mobile",
+    "infra"
   ],
   "scripts": {
     "dashboard:dev": "npm run dev --workspace=@repcoach/dashboard",
     "dashboard:build": "npm run build --workspace=@repcoach/dashboard",
     "dashboard:lint": "npm run lint --workspace=@repcoach/dashboard",
+    "infra:build": "npm run build --workspace=@repcoach/infra",
+    "infra:diff": "npm run diff --workspace=@repcoach/infra",
+    "infra:synth": "npm run synth --workspace=@repcoach/infra",
     "mobile:dev": "npm run start --workspace=@repcoach/mobile",
     "mobile:typecheck": "npm run typecheck --workspace=@repcoach/mobile"
   },

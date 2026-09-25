@@ -125,7 +125,7 @@ class CognitoJwtVerifier:
     def _build_issuer(settings: Settings) -> str:
         pool_id = settings.cognito_user_pool_id
         region = settings.cognito_region or (pool_id.split("_", 1)[0] if pool_id else None)
-        if not pool_id or not region or not settings.cognito_app_client_id:
+        if not pool_id or not region or not settings.allowed_cognito_app_client_ids:
             raise AuthenticationConfigurationError(
                 "Cognito user pool, region, and app client ID must be configured"
             )
@@ -206,9 +206,10 @@ class CognitoJwtVerifier:
             raise TokenValidationError("JWT token use is invalid")
         audience_claim = "client_id" if token_use == "access" else "aud"
         audience = claims.get(audience_claim)
-        client_id = self._settings.cognito_app_client_id
-        valid_audience = audience == client_id or (
-            isinstance(audience, list) and client_id in audience
+        allowed_client_ids = self._settings.allowed_cognito_app_client_ids
+        valid_audience = audience in allowed_client_ids or (
+            isinstance(audience, list)
+            and any(client_id in audience for client_id in allowed_client_ids)
         )
         if not valid_audience:
             raise TokenValidationError("JWT audience is invalid")
