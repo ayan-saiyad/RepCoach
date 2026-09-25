@@ -14,7 +14,7 @@
   "dependencies": {
     "expo": "~53.0.22",
     "expo-crypto": "~14.1.2",
-    "react": "^19.1.1",
+    "react": "19.1.0",
     "react-native": "0.79.6"
   },
   "devDependencies": {
