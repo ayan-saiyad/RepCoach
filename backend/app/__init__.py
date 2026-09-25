@@ -1,0 +1,1 @@
+"""RepCoach FastAPI application package."""
