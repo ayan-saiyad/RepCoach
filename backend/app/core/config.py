@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     form_model_path: str | None = None
     bedrock_region: str = "us-east-1"
     bedrock_model_id: str | None = None
+    bedrock_embedding_model_id: str | None = None
+    stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_price_pro: str | None = None
+    stripe_success_url: str = (
+        "http://localhost:3000/billing/success?session_id={CHECKOUT_SESSION_ID}"
+    )
+    stripe_cancel_url: str = "http://localhost:3000/billing/cancelled"
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None
+    twilio_from_number: str | None = None
     auto_create_schema: bool = Field(default=True)
 
     model_config = SettingsConfigDict(

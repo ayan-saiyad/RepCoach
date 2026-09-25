@@ -95,3 +95,63 @@ class DashboardSummaryResponse(BaseModel):
 class CompleteSessionResponse(BaseModel):
     session: SessionResponse
     coaching_note: str
+
+
+class CoachQuestionRequest(BaseModel):
+    user_id: str = Field(min_length=3, max_length=36)
+    question: str = Field(min_length=3, max_length=1_000)
+
+
+class CoachCitation(BaseModel):
+    memory_id: str
+    content: str
+    created_at: datetime
+
+
+class CoachResponse(BaseModel):
+    answer: str
+    provider: str
+    citations: list[CoachCitation]
+
+
+class CreateCheckoutRequest(BaseModel):
+    user_id: str = Field(min_length=3, max_length=36)
+    plan: str = Field(default="pro", pattern=r"^(free|pro)$")
+
+
+class CheckoutResponse(BaseModel):
+    checkout_url: str
+    provider: str
+    session_id: str
+
+
+class SubscriptionResponse(BaseModel):
+    user_id: str
+    plan: str
+    status: str
+    current_period_ends_at: datetime | None
+
+
+class UpsertReminderRequest(BaseModel):
+    phone_number: str = Field(min_length=8, max_length=32, pattern=r"^\+?[0-9() .-]+$")
+    timezone: str = Field(default="America/Chicago", min_length=3, max_length=64)
+    local_time: str = Field(default="18:00", pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+    enabled: bool = True
+
+
+class ReminderResponse(BaseModel):
+    id: str
+    user_id: str
+    phone_number: str
+    timezone: str
+    local_time: str
+    enabled: bool
+    last_delivery_status: str | None
+    last_sent_at: datetime | None
+
+
+class ReminderDeliveryResponse(BaseModel):
+    reminder: ReminderResponse
+    provider: str
+    delivery_id: str
+    status: str

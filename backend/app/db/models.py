@@ -6,7 +6,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -105,4 +105,47 @@ class CoachingMemory(Base):
     metadata_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Subscription(Base):
+    """Server-side entitlement state reconciled from verified Stripe events."""
+
+    __tablename__ = "subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    plan: Mapped[str] = mapped_column(String(32), default="free")
+    status: Mapped[str] = mapped_column(String(32), default="inactive")
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(
+        String(128), unique=True, nullable=True
+    )
+    current_period_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class Reminder(Base):
+    """An explicit, opt-in workout reminder with provider delivery metadata."""
+
+    __tablename__ = "reminders"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    phone_number: Mapped[str] = mapped_column(String(32))
+    timezone: Mapped[str] = mapped_column(String(64), default="America/Chicago")
+    local_time: Mapped[str] = mapped_column(String(5), default="18:00")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_delivery_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import health, sessions
+from app.api.routes import billing, coach, health, reminders, sessions
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_database, initialize_database
@@ -40,6 +40,9 @@ app.add_middleware(
 )
 app.include_router(health.router)
 app.include_router(sessions.router)
+app.include_router(coach.router)
+app.include_router(billing.router)
+app.include_router(reminders.router)
 
 
 @app.get("/", include_in_schema=False)
