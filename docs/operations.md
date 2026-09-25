@@ -2,7 +2,7 @@
 
 ## Service topology
 
-`docker compose up --build` starts PostgreSQL with pgvector, Redis, Redpanda-compatible Kafka, the FastAPI API, and the Kafka worker. The API runs `alembic upgrade head` before binding its port. The worker waits for the API health check, then drains the transaction outbox and consumes analysis messages.
+`docker compose up --build` starts PostgreSQL with pgvector, Redis, Redpanda-compatible Kafka, the FastAPI API, and the Kafka worker. The API runs `alembic upgrade head` before binding its port. The worker waits for the API health check, then drains the transaction outbox and consumes analysis messages. The host defaults are `5433` for Postgres and `6380` for Redis to avoid colliding with local development services; containers use their normal internal ports.
 
 ## Useful checks
 

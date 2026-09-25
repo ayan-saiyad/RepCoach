@@ -2,6 +2,8 @@
 
 RepCoach is an AI-powered strength-training companion that turns pose landmarks into counted repetitions, form scores, and useful coaching cues. It is designed as a portfolio-quality, local-first vertical slice rather than a UI-only mockup: a mobile coach produces pose events, a FastAPI service persists the workout and publishes analysis work, a Kafka worker grades form, and a Next.js dashboard turns the session data into progress insights.
 
+![Validation](https://github.com/ayan-saiyad/RepCoach/actions/workflows/ci.yml/badge.svg)
+
 ## Why this exists
 
 Most workout trackers record that a set happened. RepCoach focuses on *how* it happened. Each completed repetition includes a numeric score, a form classification, and a concise correction such as “Sit two inches deeper” or “Keep your knees tracking over your toes.” The architecture supports low-latency live feedback while keeping more expensive video analysis asynchronous.
@@ -89,4 +91,9 @@ npm run mobile:typecheck
 - Bedrock, Twilio, and Stripe are isolated behind ports so the app remains locally runnable and secrets never leak into client bundles.
 - Postgres owns durable workout history; Redis caches read-heavy summaries; pgvector stores coachable workout-context embeddings for semantic retrieval.
 
+## What is implemented vs. configurable
+
+The default demo is intentionally useful without third-party keys: it includes a deterministic pose replay, tested rep state machine, transactional outbox, Kafka-backed worker, responsive progress dashboard, and retrieval-backed local coach. MediaPipe camera capture, a trained PyTorch artifact, Bedrock generation, Stripe Checkout, and Twilio delivery are implemented behind server-side adapters and switch on only when their appropriate native runtime or credentials are configured. That gives the repository a runnable evidence path without pretending that a local demo sent an SMS, charged a card, or analyzed raw video.
+
 See [docs/architecture.md](docs/architecture.md) for the data flow, schemas, and production hardening path.
+See [docs/demo-script.md](docs/demo-script.md) for a concise walkthrough and [docs/operations.md](docs/operations.md) for local-stack operations.

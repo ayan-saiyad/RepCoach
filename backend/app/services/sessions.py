@@ -180,7 +180,9 @@ async def dashboard_summary(db: AsyncSession, user_id: str) -> DashboardSummaryR
     now = datetime.now(UTC)
     week_ago = now - timedelta(days=7)
     weekly_reps = sum(1 for rep in reps if rep.created_at >= week_ago)
-    cues = Counter(rep.feedback for rep in reps if rep.form_label != "good")
+    cues = Counter(
+        rep.feedback for rep in reps if rep.form_label not in {"good", "excellent"}
+    )
 
     trend: dict[str, list[float]] = defaultdict(list)
     trend_counts: Counter[str] = Counter()

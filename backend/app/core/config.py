@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     app_name: str = "RepCoach API"
     app_env: str = "development"
     log_level: str = "INFO"
-    database_url: str = "postgresql+asyncpg://repcoach:repcoach_local_only@localhost:5432/repcoach"
-    redis_url: str = "redis://localhost:6379/0"
+    database_url: str = "postgresql+asyncpg://repcoach:repcoach_local_only@localhost:5433/repcoach"
+    redis_url: str = "redis://localhost:6380/0"
     kafka_bootstrap_servers: str = "localhost:19092"
     cors_origins: str = "http://localhost:3000,http://localhost:8081"
     form_model_path: str | None = None
