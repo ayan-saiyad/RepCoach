@@ -3,21 +3,23 @@
 import { useState } from "react";
 
 import { Icon } from "@/components/icon";
-import { askCoach } from "@/lib/api";
+import { ApiAuthenticationError, askCoach } from "@/lib/api";
 import type { CoachCitation } from "@/lib/types";
 
 interface CoachPanelProps {
   cue: string | null;
   score: number | null | undefined;
+  allowDemoFallback: boolean;
+  onAuthenticationError: () => void;
 }
 
 const prompts = ["How can I improve my squat depth?", "What should I focus on next set?"];
 
-export function CoachPanel({ cue, score }: CoachPanelProps) {
+export function CoachPanel({ cue, score, allowDemoFallback, onAuthenticationError }: CoachPanelProps) {
   const [question, setQuestion] = useState("");
   const [response, setResponse] = useState<string | null>(null);
   const [citations, setCitations] = useState<CoachCitation[]>([]);
-  const [provider, setProvider] = useState<"bedrock" | "local" | "dashboard">("dashboard");
+  const [provider, setProvider] = useState<"bedrock" | "local" | "dashboard" | "unavailable">("dashboard");
   const [isThinking, setIsThinking] = useState(false);
 
   const fallbackResponse = (value: string) => {
@@ -38,8 +40,16 @@ export function CoachPanel({ cue, score }: CoachPanelProps) {
       setResponse(reply.answer);
       setCitations(reply.citations);
       setProvider(reply.provider);
-    } catch {
-      fallbackResponse(value);
+    } catch (error) {
+      if (error instanceof ApiAuthenticationError) {
+        onAuthenticationError();
+      } else if (allowDemoFallback) {
+        fallbackResponse(value);
+      } else {
+        setResponse("Your coaching service is temporarily unavailable. Please retry in a moment.");
+        setCitations([]);
+        setProvider("unavailable");
+      }
     } finally {
       setIsThinking(false);
     }
@@ -58,7 +68,7 @@ export function CoachPanel({ cue, score }: CoachPanelProps) {
         <span><Icon name="zap" size={15} /></span>
         <p><strong>Focus cue</strong>{cue ?? "Keep your tempo smooth and your alignment steady."}</p>
       </div>
-      {response ? <div className="coach-panel__response" role="status"><Icon name="sparkles" size={16} /><div><p>{response}</p><small>{provider === "bedrock" ? "Bedrock coach · grounded in saved rep feedback" : provider === "local" ? "Local retrieval coach · grounded in saved rep feedback" : "Dashboard fallback · connect the API for retrieval coaching"}</small>{citations.length > 0 ? <span className="coach-panel__citations">Based on {citations.length} recent rep signal{citations.length === 1 ? "" : "s"}.</span> : null}</div></div> : null}
+      {response ? <div className="coach-panel__response" role="status"><Icon name="sparkles" size={16} /><div><p>{response}</p><small>{provider === "bedrock" ? "Bedrock coach · grounded in saved rep feedback" : provider === "local" ? "Local retrieval coach · grounded in saved rep feedback" : provider === "dashboard" ? "Dashboard fallback · available only in demo mode" : "Service unavailable · no demo feedback is shown in production"}</small>{citations.length > 0 ? <span className="coach-panel__citations">Based on {citations.length} recent rep signal{citations.length === 1 ? "" : "s"}.</span> : null}</div></div> : null}
       <div className="coach-panel__prompts" aria-label="Suggested questions">
         {prompts.map((prompt) => <button key={prompt} type="button" onClick={() => void respond(prompt)} disabled={isThinking}>{prompt}</button>)}
       </div>

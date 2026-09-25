@@ -2,10 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { loadDashboard, loadSessionDetail } from "@/lib/api";
-import { demoDashboardData, getDemoSessionDetail } from "@/lib/demo-data";
-import { formatScore, formatSessionTime, scoreDescriptor } from "@/lib/format";
-import type { DashboardData, SessionDetail } from "@/lib/types";
 import { CoachPanel } from "@/components/coach-panel";
 import { FormTrendChart } from "@/components/form-trend-chart";
 import { Icon } from "@/components/icon";
@@ -13,48 +9,173 @@ import { MetricCard } from "@/components/metric-card";
 import { ScoreRing } from "@/components/score-ring";
 import { SessionDetail as SessionDetailCard } from "@/components/session-detail";
 import { SessionList } from "@/components/session-list";
+import {
+  ApiAccessDeniedError,
+  ApiAuthenticationError,
+  loadDashboard,
+  loadSessionDetail,
+} from "@/lib/api";
+import {
+  demoIdentity,
+  logout,
+  readCognitoIdentity,
+  startCognitoLogin,
+  type DashboardIdentity,
+} from "@/lib/auth";
+import { getDemoSessionDetail } from "@/lib/demo-data";
+import { formatScore, formatSessionTime, scoreDescriptor } from "@/lib/format";
+import {
+  loadRuntimeConfig,
+  runtimeConfigIsReady,
+  type RuntimeConfig,
+} from "@/lib/runtime-config";
+import type { DashboardData, SessionDetail } from "@/lib/types";
 
 const weeklyDays = ["M", "T", "W", "T", "F", "S", "S"];
 
+type DashboardPhase = "booting" | "configuration" | "sign-in" | "outage" | "ready";
+
+interface StateScreenProps {
+  eyebrow: string;
+  title: string;
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  secondaryLabel?: string;
+  onSecondaryAction?: () => void;
+}
+
+function StateScreen({
+  eyebrow,
+  title,
+  message,
+  actionLabel,
+  onAction,
+  secondaryLabel,
+  onSecondaryAction,
+}: StateScreenProps) {
+  return (
+    <main className="auth-screen">
+      <section className="auth-card" aria-live="polite">
+        <p className="eyebrow">{eyebrow}</p>
+        <h1>{title}</h1>
+        <p>{message}</p>
+        {actionLabel && onAction ? (
+          <button className="auth-primary-action" type="button" onClick={onAction}>
+            {actionLabel}
+          </button>
+        ) : null}
+        {secondaryLabel && onSecondaryAction ? (
+          <button className="auth-secondary-action" type="button" onClick={onSecondaryAction}>
+            {secondaryLabel}
+          </button>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
 function userInitials(userId: string): string {
-  return userId
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase() || "RC";
+  return (
+    userId
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map((part) => part[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "RC"
+  );
 }
 
 function scoreChange(data: DashboardData): string | undefined {
   const points = data.summary.form_trend;
   if (points.length < 2) return undefined;
   const change = points[points.length - 1].average_score - points[0].average_score;
-  if (change <= 0) return undefined;
-  return `+${change.toFixed(1)}`;
+  return change > 0 ? `+${change.toFixed(1)}` : undefined;
+}
+
+function issueMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return "The dashboard could not reach RepCoach.";
 }
 
 export function Dashboard() {
-  const [data, setData] = useState<DashboardData>(demoDashboardData);
-  const [selectedSession, setSelectedSession] = useState<SessionDetail | null>(demoDashboardData.latestSession);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(demoDashboardData.latestSession?.id ?? null);
-  const [isRefreshing, setIsRefreshing] = useState(true);
+  const [phase, setPhase] = useState<DashboardPhase>("booting");
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig | null>(null);
+  const [identity, setIdentity] = useState<DashboardIdentity | null>(null);
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [selectedSession, setSelectedSession] = useState<SessionDetail | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [issue, setIssue] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setIsRefreshing(true);
-    const next = await loadDashboard();
-    setData(next);
-    setSelectedSession(next.latestSession);
-    setSelectedSessionId(next.latestSession?.id ?? next.summary.recent_sessions[0]?.id ?? null);
-    setIsRefreshing(false);
+  const signOutForExpiredSession = useCallback(() => {
+    setIdentity(null);
+    setData(null);
+    setSelectedSession(null);
+    setPhase("sign-in");
   }, []);
 
+  const loadAthleteData = useCallback(
+    async (config: RuntimeConfig) => {
+      setIsRefreshing(true);
+      setIssue(null);
+      try {
+        const next = await loadDashboard({ config });
+        setData(next);
+        setSelectedSession(next.latestSession);
+        setSelectedSessionId(next.latestSession?.id ?? next.summary.recent_sessions[0]?.id ?? null);
+        setPhase("ready");
+      } catch (error) {
+        setData(null);
+        setSelectedSession(null);
+        if (error instanceof ApiAuthenticationError || error instanceof ApiAccessDeniedError) {
+          signOutForExpiredSession();
+          return;
+        }
+        setIssue(issueMessage(error));
+        setPhase("outage");
+      } finally {
+        setIsRefreshing(false);
+      }
+    },
+    [signOutForExpiredSession],
+  );
+
+  const bootstrap = useCallback(async () => {
+    setPhase("booting");
+    setIssue(null);
+    try {
+      const config = await loadRuntimeConfig();
+      setRuntimeConfig(config);
+      if (!runtimeConfigIsReady(config)) {
+        setPhase("configuration");
+        return;
+      }
+      const athlete = config.demoMode ? demoIdentity(config) : await readCognitoIdentity();
+      if (!athlete) {
+        setPhase("sign-in");
+        return;
+      }
+      setIdentity(athlete);
+      await loadAthleteData(config);
+    } catch (error) {
+      setIssue(issueMessage(error));
+      setPhase("outage");
+    }
+  }, [loadAthleteData]);
+
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void bootstrap();
+  }, [bootstrap]);
+
+  const refresh = useCallback(() => {
+    if (runtimeConfig && identity) void loadAthleteData(runtimeConfig);
+  }, [identity, loadAthleteData, runtimeConfig]);
 
   const selectSession = async (sessionId: string) => {
+    if (!data) return;
     setSelectedSessionId(sessionId);
     if (data.usingDemoData) {
       setSelectedSession(getDemoSessionDetail(sessionId));
@@ -64,27 +185,48 @@ export function Dashboard() {
       setSelectedSession(data.latestSession);
       return;
     }
-
     setIsDetailLoading(true);
     try {
-      const detail = await loadSessionDetail(sessionId);
-      setSelectedSession(detail);
-    } catch {
-      setSelectedSession(null);
+      setSelectedSession(await loadSessionDetail(sessionId));
+    } catch (error) {
+      if (error instanceof ApiAuthenticationError || error instanceof ApiAccessDeniedError) {
+        signOutForExpiredSession();
+      } else {
+        setIssue(issueMessage(error));
+        setPhase("outage");
+      }
     } finally {
       setIsDetailLoading(false);
     }
   };
 
+  const bestTrendScore = useMemo(
+    () => data?.summary.form_trend.reduce((highest, point) => Math.max(highest, point.average_score), 0) ?? 0,
+    [data],
+  );
+
+  if (phase === "booting") {
+    return <StateScreen eyebrow="RepCoach" title="Preparing your dashboard" message="Checking your secure training session…" />;
+  }
+  if (phase === "configuration") {
+    return <StateScreen eyebrow="RepCoach deployment" title="Sign-in is not configured" message="This dashboard cannot use demo data in this environment. Configure the production Cognito and API runtime settings, then reload." actionLabel="Reload" onAction={() => void bootstrap()} />;
+  }
+  if (phase === "sign-in") {
+    return <StateScreen eyebrow="RepCoach" title="Your training, securely connected" message="Sign in to view your workout history, form trends, and coaching feedback." actionLabel="Sign in with RepCoach" onAction={startCognitoLogin} />;
+  }
+  if (phase === "outage") {
+    return <StateScreen eyebrow="RepCoach availability" title="Your dashboard is temporarily unavailable" message={issue ?? "Please try again in a moment. No demo data is shown outside local demo mode."} actionLabel="Try again" onAction={() => void bootstrap()} secondaryLabel="Sign out" onSecondaryAction={logout} />;
+  }
+  if (!data || !runtimeConfig || !identity) {
+    return <StateScreen eyebrow="RepCoach" title="Preparing your dashboard" message="Checking your secure training session…" />;
+  }
+
   const formScore = data.summary.average_form_score;
   const currentTrend = scoreChange(data);
   const weeklyGoal = Math.max(80, Math.ceil(data.summary.weekly_reps / 20) * 20);
   const weeklyProgress = Math.min(100, (data.summary.weekly_reps / weeklyGoal) * 100);
-  const bestTrendScore = useMemo(
-    () => data.summary.form_trend.reduce((highest, point) => Math.max(highest, point.average_score), 0),
-    [data.summary.form_trend],
-  );
   const syncLabel = data.usingDemoData ? "Demo preview" : "Live data";
+  const profileLabel = identity.kind === "demo" ? "Demo athlete" : "Signed-in athlete";
 
   return (
     <main className="app-shell">
@@ -104,9 +246,9 @@ export function Dashboard() {
             <span className="sidebar__goal-icon"><Icon name="flame" size={17} /></span>
             <div><strong>{data.summary.current_streak_days} day streak</strong><small>Keep your momentum</small></div>
           </div>
-          <button className="profile-button" type="button" aria-label="Open athlete profile">
-            <span className="profile-button__avatar">{userInitials(data.summary.user_id)}</span>
-            <span><strong>Demo athlete</strong><small>Strength plan</small></span>
+          <button className="profile-button" type="button" onClick={logout} aria-label="Sign out">
+            <span className="profile-button__avatar">{userInitials(identity.userId)}</span>
+            <span><strong>{profileLabel}</strong><small>Sign out</small></span>
             <Icon name="chevron-right" size={16} />
           </button>
         </div>
@@ -121,7 +263,7 @@ export function Dashboard() {
           </div>
           <div className="dashboard-header__actions">
             <span className={`api-status ${data.usingDemoData ? "api-status--demo" : ""}`}><i />{syncLabel}</span>
-            <button className="icon-button" type="button" onClick={() => void refresh()} disabled={isRefreshing} aria-label="Refresh dashboard data"><Icon name="refresh" size={18} className={isRefreshing ? "spin" : ""} /></button>
+            <button className="icon-button" type="button" onClick={refresh} disabled={isRefreshing} aria-label="Refresh dashboard data"><Icon name="refresh" size={18} className={isRefreshing ? "spin" : ""} /></button>
             <button className="start-button" type="button" onClick={() => document.getElementById("sessions")?.scrollIntoView({ behavior: "smooth" })}><Icon name="play" size={16} />Review workout</button>
           </div>
         </header>
@@ -194,7 +336,7 @@ export function Dashboard() {
           </article>
         </section>
 
-        <section id="coach"><CoachPanel cue={data.summary.common_cue} score={formScore} /></section>
+        <section id="coach"><CoachPanel cue={data.summary.common_cue} score={formScore} allowDemoFallback={runtimeConfig.demoMode} onAuthenticationError={signOutForExpiredSession} /></section>
 
         <footer className="dashboard-footer">Last updated {formatSessionTime(data.summary.generated_at)} · Pose landmarks only; no workout video is stored by default.</footer>
       </section>

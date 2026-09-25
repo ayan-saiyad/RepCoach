@@ -1,4 +1,5 @@
 import { demoDashboardData } from "@/lib/demo-data";
+import type { RuntimeConfig } from "@/lib/runtime-config";
 import type {
   CoachReply,
   DashboardData,
@@ -6,72 +7,92 @@ import type {
   SessionDetail,
 } from "@/lib/types";
 
-export const API_ORIGIN = (
-  process.env.NEXT_PUBLIC_API_BASE_URL ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000"
-).replace(/\/$/, "");
-export const DASHBOARD_USER_ID = process.env.NEXT_PUBLIC_DEMO_USER_ID ?? "demo-athlete";
-const REQUEST_TIMEOUT_MS = 3_500;
+const REQUEST_TIMEOUT_MS = 5_000;
 
-class ApiUnavailableError extends Error {
+export interface DashboardApiContext {
+  config: RuntimeConfig;
+}
+
+export class ApiUnavailableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ApiUnavailableError";
   }
 }
 
+export class ApiAuthenticationError extends Error {
+  constructor(message = "Your sign-in session has expired.") {
+    super(message);
+    this.name = "ApiAuthenticationError";
+  }
+}
+
+export class ApiAccessDeniedError extends Error {
+  constructor(message = "You do not have access to this athlete data.") {
+    super(message);
+    this.name = "ApiAccessDeniedError";
+  }
+}
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
   try {
-    const response = await fetch(`${API_ORIGIN}${path}`, {
+    const response = await fetch(`/api/backend${path}`, {
       ...init,
       headers: { Accept: "application/json", ...init.headers },
       cache: "no-store",
       signal: controller.signal,
     });
+    if (response.status === 401) throw new ApiAuthenticationError();
+    if (response.status === 403) throw new ApiAccessDeniedError();
     if (!response.ok) {
-      throw new ApiUnavailableError(`The API returned ${response.status}.`);
+      throw new ApiUnavailableError(`The RepCoach API returned ${response.status}.`);
     }
     return (await response.json()) as T;
   } catch (error) {
-    if (error instanceof ApiUnavailableError) throw error;
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new ApiUnavailableError("The API took too long to respond.");
+    if (
+      error instanceof ApiUnavailableError ||
+      error instanceof ApiAuthenticationError ||
+      error instanceof ApiAccessDeniedError
+    ) {
+      throw error;
     }
-    throw new ApiUnavailableError("Could not reach the API.");
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ApiUnavailableError("The RepCoach API took too long to respond.");
+    }
+    throw new ApiUnavailableError("Could not reach the RepCoach API.");
   } finally {
     window.clearTimeout(timeout);
   }
 }
 
-export async function loadDashboard(): Promise<DashboardData> {
+export async function loadDashboard(context: DashboardApiContext): Promise<DashboardData> {
   try {
-    const summary = await apiFetch<DashboardSummary>(`/v1/dashboard/${encodeURIComponent(DASHBOARD_USER_ID)}/summary`);
+    const summary = await apiFetch<DashboardSummary>("/dashboard/summary");
     const newestSession = summary.recent_sessions[0];
     const latestSession = newestSession
-      ? await apiFetch<SessionDetail>(`/v1/sessions/${encodeURIComponent(newestSession.id)}`)
+      ? await apiFetch<SessionDetail>(`/sessions/${encodeURIComponent(newestSession.id)}`)
       : null;
-
     return { summary, latestSession, usingDemoData: false };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Could not reach the API.";
-    return { ...demoDashboardData, message: `${demoDashboardData.message} ${message}` };
+    if (!context.config.demoMode) throw error;
+    const message = error instanceof Error ? error.message : "Could not reach the RepCoach API.";
+    return {
+      ...demoDashboardData,
+      message: `Demo mode is enabled. ${message}`,
+    };
   }
 }
 
 export async function loadSessionDetail(sessionId: string): Promise<SessionDetail> {
-  return apiFetch<SessionDetail>(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+  return apiFetch<SessionDetail>(`/sessions/${encodeURIComponent(sessionId)}`);
 }
 
 export async function askCoach(question: string): Promise<CoachReply> {
-  return apiFetch<CoachReply>("/v1/coach/query", {
+  return apiFetch<CoachReply>("/coach", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: DASHBOARD_USER_ID, question }),
+    body: JSON.stringify({ question }),
   });
 }
-
-export { ApiUnavailableError };
