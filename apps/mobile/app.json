@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "RepCoach",
+    "slug": "repcoach",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "repcoach",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.repcoach.mobile"
+    },
+    "android": {
+      "package": "com.repcoach.mobile"
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
